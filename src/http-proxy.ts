@@ -21,13 +21,17 @@ import * as https from 'https';
 export class HttpMcpProxy extends EventEmitter {
   private readonly gate: Gate;
   private readonly remoteUrl: URL;
+  private readonly upstreamTimeoutMs: number;
   private sessionId: string | null = null;
   private started = false;
 
-  constructor(gate: Gate, remoteUrl: string) {
+  constructor(gate: Gate, remoteUrl: string, options: { upstreamTimeoutMs?: number } = {}) {
     super();
     this.gate = gate;
     this.remoteUrl = new URL(remoteUrl);
+    // Max time to wait for the remote MCP server to answer one request. Tool calls that do
+    // real work (crawls, LLM runs) can legitimately exceed 30 s; callers can raise this.
+    this.upstreamTimeoutMs = options.upstreamTimeoutMs && options.upstreamTimeoutMs > 0 ? options.upstreamTimeoutMs : 30_000;
   }
 
   /**
@@ -253,7 +257,7 @@ export class HttpMcpProxy extends EventEmitter {
         path: this.remoteUrl.pathname + this.remoteUrl.search,
         method: 'POST',
         headers,
-        timeout: 30_000,
+        timeout: this.upstreamTimeoutMs,
       };
 
       const MAX_RESPONSE_BODY = 10 * 1024 * 1024; // 10 MB response limit
@@ -293,7 +297,7 @@ export class HttpMcpProxy extends EventEmitter {
         if (!settled) {
           settled = true;
           req.destroy();
-          reject(new Error('Request timed out after 30s'));
+          reject(new Error(`Request timed out after ${this.upstreamTimeoutMs / 1000}s`));
         }
       });
 

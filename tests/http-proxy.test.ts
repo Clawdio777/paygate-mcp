@@ -374,6 +374,29 @@ describe('HttpMcpProxy', () => {
   // ─── Error Handling ─────────────────────────────────────────────────────────
 
   describe('Error Handling', () => {
+    test('should time out a slow remote server after upstreamTimeoutMs', async () => {
+      // Remote never answers; the proxy must give up after the configured upstream timeout,
+      // not the previous hard-coded 30 s.
+      mockResponseOverride = (_req, _res) => { /* hold the socket open */ };
+
+      const gate = createGate();
+      const proxy = new HttpMcpProxy(gate, `http://localhost:${mockPort}/mcp`, { upstreamTimeoutMs: 200 });
+      await proxy.start();
+
+      const startedAt = Date.now();
+      const response = await proxy.handleRequest({
+        jsonrpc: '2.0',
+        id: 1,
+        method: 'tools/list',
+        params: {},
+      }, null);
+
+      expect(Date.now() - startedAt).toBeLessThan(5_000);
+      expect(response.error).toBeDefined();
+      expect(response.error!.message).toContain('timed out after 0.2s');
+      await proxy.stop();
+    });
+
     test('should handle remote server returning HTTP error', async () => {
       mockResponseOverride = (_req, res) => {
         let body = '';
