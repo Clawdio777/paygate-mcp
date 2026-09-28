@@ -397,6 +397,61 @@ describe('HttpMcpProxy', () => {
       await proxy.stop();
     });
 
+    test('should refund credits when the remote tool call fails and refundOnFailure is on', async () => {
+      mockResponseOverride = (_req, res) => {
+        let body = '';
+        _req.on('data', (chunk) => { body += chunk.toString(); });
+        _req.on('end', () => {
+          const parsed = JSON.parse(body);
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ jsonrpc: '2.0', id: parsed.id, error: { code: -32000, message: 'tool exploded' } }));
+        });
+      };
+
+      const gate = new Gate({ ...DEFAULT_CONFIG, defaultCreditsPerCall: 1, refundOnFailure: true });
+      const record = gate.store.createKey('test', 100);
+      const proxy = new HttpMcpProxy(gate, `http://localhost:${mockPort}/mcp`);
+      await proxy.start();
+
+      const response = await proxy.handleRequest({
+        jsonrpc: '2.0',
+        id: 1,
+        method: 'tools/call',
+        params: { name: 'read_file', arguments: { path: '/tmp/test.txt' } },
+      }, record.key);
+
+      expect(response.error).toBeDefined();
+      expect(gate.store.getKey(record.key)!.credits).toBe(100); // charged 1, refunded 1
+      await proxy.stop();
+    });
+
+    test('should not refund when refundOnFailure is off', async () => {
+      mockResponseOverride = (_req, res) => {
+        let body = '';
+        _req.on('data', (chunk) => { body += chunk.toString(); });
+        _req.on('end', () => {
+          const parsed = JSON.parse(body);
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ jsonrpc: '2.0', id: parsed.id, error: { code: -32000, message: 'tool exploded' } }));
+        });
+      };
+
+      const gate = createGate();
+      const record = gate.store.createKey('test', 100);
+      const proxy = new HttpMcpProxy(gate, `http://localhost:${mockPort}/mcp`);
+      await proxy.start();
+
+      await proxy.handleRequest({
+        jsonrpc: '2.0',
+        id: 1,
+        method: 'tools/call',
+        params: { name: 'read_file', arguments: { path: '/tmp/test.txt' } },
+      }, record.key);
+
+      expect(gate.store.getKey(record.key)!.credits).toBe(99);
+      await proxy.stop();
+    });
+
     test('should handle remote server returning HTTP error', async () => {
       mockResponseOverride = (_req, res) => {
         let body = '';

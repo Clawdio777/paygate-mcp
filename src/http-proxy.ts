@@ -102,12 +102,26 @@ export class HttpMcpProxy extends EventEmitter {
       // Allowed — forward to remote server
       const response = await this.forwardToServer(request);
 
+      // Refund on failure: if the remote tool call returned an error (including transport
+      // errors mapped to -32603), give the credits back (pre-execution deduction model).
+      // Mirrors McpProxy; previously the remote transport never refunded.
+      let refunded = false;
+      if (response.error && this.gate.refundOnFailure && decision.creditsCharged > 0 && apiKey) {
+        this.gate.refund(apiKey, toolCall.name, decision.creditsCharged);
+        refunded = true;
+      }
+
+      const remaining = refunded
+        ? (this.gate.store.getKey(apiKey!)?.credits ?? decision.remainingCredits)
+        : decision.remainingCredits;
+
       // Emit for observability
       this.emit('tool-call', {
         tool: toolCall.name,
         apiKey: apiKey?.slice(0, 10),
-        creditsCharged: decision.creditsCharged,
-        remainingCredits: decision.remainingCredits,
+        creditsCharged: refunded ? 0 : decision.creditsCharged,
+        remainingCredits: remaining,
+        refunded,
       });
 
       return response;
@@ -286,6 +300,10 @@ export class HttpMcpProxy extends EventEmitter {
           resolve({ body, headers: res.headers as Record<string, string | string[] | undefined> });
         });
       });
+
+      // Long-running remote tools answer nothing for a while; TCP keepalive probes keep
+      // NAT/firewall state alive so an idle flow is not silently dropped (seen as ETIMEDOUT).
+      req.on('socket', (socket) => socket.setKeepAlive(true, 10_000));
 
       req.on('error', (err) => {
         if (!settled) {
